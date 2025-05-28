@@ -1,2 +1,2 @@
-cd "F:\yt opplasting"
+cd "Path-to-script"
 python upload_script.py
