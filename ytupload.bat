@@ -1,3 +1,3 @@
 @echo off
 cd "Path-to-script"
-python upload_script.py
+python automatic_yt_uploader.py
