@@ -47,6 +47,57 @@ def get_authenticated_service():
             pickle.dump(credentials, token)
     return build("youtube", "v3", credentials=credentials)
 
+def get_subfolder_name(filepath):
+    # e.g., F:\Opptak\CounterStrike\clip1.mp4 → CounterStrike
+    parts = os.path.normpath(filepath).split(os.sep)
+    if len(parts) >= 2:
+        return parts[-2]
+    return "Uncategorized"
+
+def get_or_create_playlist(youtube, playlist_title):
+    # Search for existing playlist
+    request = youtube.playlists().list(
+        part="snippet",
+        mine=True,
+        maxResults=50
+    )
+    response = request.execute()
+    
+    for item in response["items"]:
+        if item["snippet"]["title"] == playlist_title:
+            return item["id"]
+
+    # Not found — create it
+    request = youtube.playlists().insert(
+        part="snippet,status",
+        body={
+            "snippet": {
+                "title": playlist_title,
+                "description": f"Auto-created playlist for {playlist_title}"
+            },
+            "status": {
+                "privacyStatus": "private"
+            }
+        }
+    )
+    response = request.execute()
+    return response["id"]
+
+def add_video_to_playlist(youtube, video_id, playlist_id):
+    request = youtube.playlistItems().insert(
+        part="snippet",
+        body={
+            "snippet": {
+                "playlistId": playlist_id,
+                "resourceId": {
+                    "kind": "youtube#video",
+                    "videoId": video_id
+                }
+            }
+        }
+    )
+    request.execute()
+
 class TqdmBufferedReader(io.BufferedReader):
     def __init__(self, raw, total):
         super().__init__(raw)
@@ -89,9 +140,11 @@ def upload_video(file_path, title="Test Title", description="Test Description"):
         while response is None:
             status, response = request.next_chunk()
         print("✅ Upload complete! Video ID:", response["id"])
+        return response["id"]
 
 if __name__ == "__main__":
 
+    youtube = get_authenticated_service()
     files = files_to_upload()
     uploaded_files = []
     print("Starting YouTube video upload process...")
@@ -101,8 +154,12 @@ if __name__ == "__main__":
         print(f"Found {len(files)} files to upload.")
         for file in files:
             try:
-                print(f"Uploading {file}...")
-                upload_video(file, title=os.path.basename(file), description="Uploaded via YouTube API")
+                subfolder = get_subfolder_name(file)
+                print(f"Uploading {file} from folder '{subfolder}'...")
+                video_id = upload_video(file, title=os.path.basename(file), description="Uploaded via YouTube API")
+                playlist_id = get_or_create_playlist(youtube, subfolder)
+                add_video_to_playlist(youtube, video_id, playlist_id)
+
                 uploaded_files.append(file)
             except Exception as e:
                 print(f"Error uploading {file}: {e}")
