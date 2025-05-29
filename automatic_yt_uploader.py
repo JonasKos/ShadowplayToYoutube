@@ -6,6 +6,8 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
 
 # Automatic YouTube Video Uploader
 # This script uploads videos from a specified directory to YouTube using the YouTube Data API v3.
@@ -14,7 +16,7 @@ import io
 SCOPES = ["https://www.googleapis.com/auth/youtube"]
 CLIENT_SECRET_FILE = "client_secret.json"
 CREDENTIALS_PICKLE_FILE = "youtube_token.pickle"
-MAX_VIDEOS_PER_DAY = 30
+MAX_VIDEOS_PER_DAY = 3
 
 def files_to_upload():
     # find file inside the nested folder "opptak" where the videos are located inside folders for each game, opptake is located in F:\
@@ -99,9 +101,20 @@ def add_video_to_playlist(youtube, video_id, playlist_id):
     request.execute()
 
 class TqdmBufferedReader(io.BufferedReader):
+    _bar_index = 0  # Class variable to keep track of the progress bar index
+
     def __init__(self, raw, total):
         super().__init__(raw)
-        self._progress_bar = tqdm(total=total, unit='B', unit_scale=True, desc='Uploading')
+        self._position = TqdmBufferedReader._bar_index
+        TqdmBufferedReader._bar_index += 1
+        self._progress_bar = tqdm(
+            total=total,
+            unit='B',
+            unit_scale=True,
+            desc='Uploading', 
+            position=self._position, # Use the class variable to set the position
+            leave=True  # Keep the progress bar after completion
+            )
 
     def read(self, amt=None):
         chunk = super().read(amt)
@@ -112,8 +125,10 @@ class TqdmBufferedReader(io.BufferedReader):
         self._progress_bar.close()
         super().close()
 
-def upload_video(file_path, title="Test Title", description="Test Description"):
-    youtube = get_authenticated_service()
+def upload_video(file_path, title="Test Title", description="Test Description", youtube=None):
+    if youtube is None:
+        # If no YouTube service is passed, create a new one
+        youtube = get_authenticated_service()
 
     file_size = os.path.getsize(file_path)
     with open(file_path, 'rb') as f:
@@ -131,7 +146,8 @@ def upload_video(file_path, title="Test Title", description="Test Description"):
                     "categoryId": "20"  # Category ID for "Gaming"
                 },
                 "status": {
-                    "privacyStatus": "unlisted"  # Change to "public" or "private" as needed
+                    "privacyStatus": "unlisted",  # Change to "public" or "private" as needed
+                    "selfDeclaredMadeForKids": False  # Set to True if the video is made for kids
                 }
             },
             media_body=media
@@ -140,36 +156,69 @@ def upload_video(file_path, title="Test Title", description="Test Description"):
         response = None
         while response is None:
             status, response = request.next_chunk()
-        print("✅ Upload complete! Video ID:", response["id"])
         return response["id"]
+    
+
+def upload_and_process_video(file):
+    youtube = get_authenticated_service() # Ensure we have a fresh authenticated service for each thread
+    try:
+        subfolder = get_subfolder_name(file)
+        print(f"[{os.path.basename(file)}] Uploading from folder '{subfolder}'...")
+        title = os.path.splitext(os.path.basename(file))[0]
+        video_id = upload_video(file, title=title, description="Uploaded via YouTube API", youtube=youtube)
+        playlist_id = get_or_create_playlist(youtube, subfolder)
+        add_video_to_playlist(youtube, video_id, playlist_id)
+        sys.stdout.flush()  # Ensure the output is flushed immediately
+        print(f"[{os.path.basename(file)}] ✅ Done. Video ID: {video_id}, added to playlist '{subfolder}'.")
+        return file  # Mark as successfully uploaded
+    except Exception as e:
+        print(f"[{os.path.basename(file)}] ❌ Error: {e}")
+        return None
 
 if __name__ == "__main__":
 
     youtube = get_authenticated_service()
     files = files_to_upload()
     uploaded_files = []
-    print("Starting YouTube video upload process...")
-    if not files:
+    amount_uploaded = 0
+    count = 0
+    print("Starting paralell YouTube video upload process...")
+    """ if not files:
         print("No files to upload.")
     else:
         print(f"Found {len(files)} files to upload.")
         for file in files:
             try:
                 subfolder = get_subfolder_name(file)
-                print(f"Uploading {file} from folder '{subfolder}'...")
+                print(f"Uploading {file} from folder '{subfolder}' ({amount_uploaded + 1} of {len(files)})...")
+
                 video_id = upload_video(file, title=os.path.basename(file), description="Uploaded via YouTube API")
                 playlist_id = get_or_create_playlist(youtube, subfolder)
                 add_video_to_playlist(youtube, video_id, playlist_id)
 
                 uploaded_files.append(file)
+                amount_uploaded += 1
+                print(f"Video {os.path.basename(file)} uploaded and added to playlist '{subfolder}'.")
             except Exception as e:
-                print(f"Error uploading {file}: {e}")
+                print(f"Error uploading {file}: {e}") """
+    
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(upload_and_process_video, file): file for file in files}
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                uploaded_files.append(result)
+                amount_uploaded += 1
+            
         
         # Delete only the files we uploaded
         for file in uploaded_files:
             try:
                 os.remove(file)
+                count += 1
                 print(f"Deleted file: {file}")
             except Exception as e:
                 print(f"Error deleting file {file}: {e}")
  
+        print(f"✅ Finished uploading {amount_uploaded} videos and deleted {count} files.")
