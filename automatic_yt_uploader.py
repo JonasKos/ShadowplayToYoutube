@@ -11,10 +11,10 @@ import io
 # This script uploads videos from a specified directory to YouTube using the YouTube Data API v3.
 
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = ["https://www.googleapis.com/auth/youtube"]
 CLIENT_SECRET_FILE = "client_secret.json"
 CREDENTIALS_PICKLE_FILE = "youtube_token.pickle"
-MAX_VIDEOS_PER_DAY = 8
+MAX_VIDEOS_PER_DAY = 30
 
 def files_to_upload():
     # find file inside the nested folder "opptak" where the videos are located inside folders for each game, opptake is located in F:\
@@ -118,7 +118,8 @@ def upload_video(file_path, title="Test Title", description="Test Description"):
     file_size = os.path.getsize(file_path)
     with open(file_path, 'rb') as f:
         buffered = TqdmBufferedReader(f, total=file_size)
-        media = MediaIoBaseUpload(buffered, mimetype='video/*', chunksize=-1, resumable=True)
+        chunksize = 1024 * 1024 * 8  # 8 MB chunks
+        media = MediaIoBaseUpload(buffered, mimetype='video/*', chunksize=chunksize, resumable=True)
 
         request = youtube.videos().insert(
             part="snippet,status",
